@@ -163,7 +163,8 @@ extra bit is harmless. This both proves the cap is correctly enforced at the rig
 Under a fixed sampling budget (200 reads, 2000 sweeps), SA feasibility falls from
 1.0 at N=6 to ~0.46 at N=48, and the best-feasible optimality gap grows from 0 to
 ~0.14, while CBC returns the proven optimum throughout in a few–100 ms. SA wall
-time grows roughly linearly with N (47 → 383 ms) but this is *not* a speed claim —
+time grows roughly linearly with N (~50 → ~360 ms; exact ms vary run to run) but
+this is *not* a speed claim —
 CBC is both faster and exact at these sizes. The point is to locate where a fixed
 SA budget starts to degrade, i.e. where more sampling effort (or Stage-3 hardware)
 would be needed. **Tiers are harder than jobs**: at fixed N=12, feasibility drops
