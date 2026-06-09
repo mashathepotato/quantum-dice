@@ -1,0 +1,46 @@
+\documentclass{article}
+
+\usepackage[preprint]{neurips_2026}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{microtype}
+\usepackage{titlesec}
+
+% --- one-page fit knobs (relax these first if you want more air) ---
+\titlespacing*{\section}{0pt}{0.5em}{0.25em}
+\titleformat{\section}{\normalfont\large\bfseries}{\thesection}{0.5em}{}
+\setlength{\parskip}{0pt}
+% -------------------------------------------------------------------
+
+\title{Resource Allocation for Agentic Research Workflows}
+
+\author{\texttt{Quantum Dice Trinity Challenge 2026 --- Stage 1 Proposal}}
+
+\begin{document}
+
+\maketitle
+
+\vspace{-2em}
+
+Orchestrating many AI agents under shared resource limits is a combinatorial assignment problem that must be re-solved every dispatch cycle. A concrete example is an \textbf{autonomous research lab}: a multi-agent system that performs the work of a research group with minimal human intervention. \emph{Agents} (``PhD students'') are heterogeneous workers that differ in capability, cost, and latency. A \emph{Supervisor} coordinates a pool of agents into a \emph{lab}, and multiple labs form an \emph{ecosystem} that communicates by appending detailed Markdown documents other agents read \citep{wang2024survey}. At scale an operational bottleneck arises independent of model quality: every cycle, a batch of pending jobs must be routed onto finite resources, efficiently and repeatedly. The constraints derive from a system I operate as end-user, and the approach generalises to agent-scheduling problems beyond the research.
+
+I narrow the general agentic-scheduling problem \citep{pinedo2016scheduling} to a tractable Stage 1 core, drawn from the lab I operate. Each cycle a small queue of pending jobs (Researcher proposals, Executor runs, periodic Analyst digests) is routed across a few \textbf{model tiers} (a cheap default; an expensive one used only on escalation). \textbf{The scarce resource is a hard daily spend cap} under a fixed multi-week credit budget; per-provider rate limits are secondary. \textbf{The objective is token cost}: routing each job to the cheapest tier that can do it, under the cap, is exactly the waste the Supervisor should eliminate. Jobs within a cycle are treated as independent; the role dependency chain (Researcher$\to$Executor$\to$Analyst$\to$Writer) and cross-lab corroboration are deferred to later stages.
+
+\paragraph{Early QUBO mapping}
+Let $x_{i,a}\in\{0,1\}$ with $x_{i,a}=1$ iff job $i\in\{1,\dots,N\}$ runs on tier $a\in\{1,\dots,A\}$; with $N\!\sim\!10$--$50$ jobs over $A\!\sim\!2$--$3$ tiers, $NA$ stays well within p-bit scale. The objective is $\min\sum_{i,a} c_{i,a}x_{i,a}$, where $c_{i,a}$ is the expected token cost of running $i$ on tier $a$ from logged spend; a capability mask sets $c_{i,a}\!\to\!\infty$ where a tier cannot serve a job. Constraints become penalties \citep{lucas2014ising}: (C1) each job assigned once, $P_{\text{assign}}\sum_i(\sum_a x_{i,a}-1)^2$, \emph{hard}; (C2) a \textbf{daily spend cap} $\sum_{i,a} c_{i,a}x_{i,a}\le B$ as a squared-slack penalty \citep{coffman1997binpacking}, \emph{hard}, with rate limits a secondary soft constraint of the same form; (C3) an \textbf{escalation coupling} $-P_{\text{esc}}\sum_{i<j} w_{ij}\,x_{i,\text{hi}}x_{j,\text{hi}}$ rewarding (or, for $w_{ij}<0$, penalising) sending related jobs to the expensive tier together, since the marginal value of escalation is not separable across jobs sharing context or a hypothesis. Combined, $\min_x x^{\top}Qx$. Term (C3) makes this a genuine QUBO rather than a trivially classical knapsack: the value of escalating job $i$ depends on whether related job $j$ is also escalated. The weights $P_{\text{assign}},P_{\text{cap}},P_{\text{esc}}$ are the central tuning objects, and the hard-versus-soft split \citep{fisher1981lagrangian} is an explicit experimental choice, not a fixed assumption.
+
+\textbf{End-user.} The consumer is the Supervisor/orchestration layer of the lab, and more broadly any budget-constrained agent orchestrator. The data needed is already logged: per-job token cost and per-tier spend live in the run database, and a budget tracker enforces the daily cap, so there is no collection barrier. The routing decision recurs every cycle, continuously and unattended, on a sub-second budget, which honestly motivates a fast sampler over re-solving an exact program each time. The user wants not one proven optimum but a cheap, valid, repeatable routing plus a few near-optimal alternatives to choose among on preferences not encoded in $Q$.
+
+\textbf{Why probabilistic computing.} I do not claim to beat simulated annealing or exact solvers at small scale. Instead, I expect advantage to emerge only as coupling and contention densify; locating that crossover is itself a result. A p-bit network is a physical QUBO sampler and the problem is already a QUBO with sparse couplings; the hardware samples a \emph{distribution} over low-energy states rather than one minimiser. Evaluating sampled distributions rather than single points is native to my background in quantum generative modelling.
+
+\textbf{Trade-offs and next steps.} \emph{Realism vs.\ tractability}: time-slots and DAG precedence blow up the variable count ($x_{i,a,t}$) and are the main tractability risk, deferred to Stage 2--3 with measured qubit cost. \emph{Hard vs.\ soft}: assignment and the spend cap hard, escalation and rate limit soft, then varied to study feasibility. By Stage 2, I will deliver a working single-cycle QUBO router, sampled and benchmarked against an exact ILP on small instances.
+
+\bibliographystyle{plainnat}
+\bibliography{main}
+
+\end{document}
