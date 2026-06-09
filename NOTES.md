@@ -142,3 +142,40 @@ STAGE2_REPORT.md  problem→formulation→implementation→results + criteria ma
 8. STAGE2_REPORT.md, README.md.
 
 Each step is a small git commit.
+
+---
+
+## 5. Implementation iteration log (what changed during build, and why)
+
+These are deviations from the *scaffold* discovered while making the model
+actually work under simulated annealing. They are the core "iteration" evidence.
+
+1. **Slack sized to the slack *range*, not the cap.** The scaffold suggested
+   `K_d = ceil(log2(B[d]+1))`. But every job runs on at least the cheap tier, so
+   daily spend never falls below the all-cheap baseline; the slack only needs to
+   cover `[0, cap − all-cheap]`. Sizing to this range cut slack bits substantially
+   and shrank the per-day cap clique. (`slack_bits_for`, `default_slack_bits`.)
+
+2. **Baseline-shifted cap encoding (the big one).** The literal cap penalty
+   `(Σ c̃·x + slack − B̃)²` ("absolute") put *every* job on a day — cheap or not —
+   into one fully-connected quadratic clique with a large constant baseline; SA
+   satisfied it only ~5% of the time. Rewriting it as
+   `(Σ Δ̃·x + slack − headroom)²` ("shifted"), where `Δ̃ = c̃ − c̃[:,0]`, makes the
+   cheap-tier variables drop out of the clique entirely. Identical at one-hot
+   feasible points, but SA feasibility jumped from ~5% to ~80%. This is the
+   default; `cap_mode="absolute"` is retained to reproduce the v1 failure
+   (experiment 01, `01_encoding_comparison.png`).
+
+3. **Penalty calibration reference = max single coefficient, not the sum.** Hard
+   penalties must beat the objective a *single* constraint-cheating flip can buy,
+   bounded by `S_max = max|c−v|`, not the sum over all jobs. Scaling penalties to
+   `S_max` keeps the QUBO's coefficient dynamic range narrow, which SA needs.
+   (`objective_coeff_max`; experiment 01 finds the feasible regime ≳ `1·S_max`.)
+
+4. **Cap generation = all-cheap baseline + tightness·headroom.** The initial
+   `tightness·mean-tier` caps were so tight the feasible region was nearly the
+   single all-cheap point. The new form always admits the all-cheap plan and lets
+   `cap_tightness` directly control how much escalation the budget permits — a
+   cleaner, more interpretable knob and a more realistic budget.
+
+All four are documented in code docstrings at the point of definition.

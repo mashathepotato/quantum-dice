@@ -1,0 +1,19 @@
+{
+  "_comment": "SCHEMA EXAMPLE ONLY — this is hand-written illustrative data, NOT a real run-database export. It documents the format src.data.load_instance expects. Replace with a genuine export to route real jobs. Costs/values are in tokens; index 0 of each tier list is the cheap default tier.",
+  "tiers": ["cheap-default", "escalation-gpt-x"],
+  "credit_unit": 2000,
+  "caps": [120000, 150000],
+  "jobs": [
+    {"id": 0, "role": "Researcher", "day": 0, "cost": [4000, 16000], "value": [0, 9000]},
+    {"id": 1, "role": "Researcher", "day": 0, "cost": [5000, 20000], "value": [0, 6000]},
+    {"id": 2, "role": "Executor",   "day": 0, "cost": [42000, 168000], "value": [0, 120000]},
+    {"id": 3, "role": "Executor",   "day": 1, "cost": [38000, 152000], "value": [0, 40000]},
+    {"id": 4, "role": "Analyst",    "day": 1, "cost": [12000, 48000], "value": [0, 30000]}
+  ],
+  "edges": [
+    [0, 2, 3000],
+    [1, 2, 2500],
+    [2, 3, 4000],
+    [3, 4, 1500]
+  ]
+}
