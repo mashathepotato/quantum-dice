@@ -77,16 +77,45 @@ def add_squared_penalty(
     bqm.offset += strength * (constant * constant)
 
 
-def slack_bits_for(cap_units: int) -> int:
-    """Number of slack bits to represent any unused budget in [0, cap_units].
+def slack_bits_for(slack_range_units: int) -> int:
+    """Number of slack bits to represent unused budget in [0, slack_range_units].
 
-    K = ceil(log2(cap_units + 1)) gives max representable slack 2^K - 1 >= cap_units,
-    so every feasible spend level (0..cap_units) has an exact slack complement and
-    the equality Σ c̃x + slack = B̃ is satisfiable iff Σ c̃x ≤ B̃.
+    K = ceil(log2(range + 1)) gives max representable slack 2^K - 1 >= range, so
+    every feasible spend level has an exact slack complement and the equality
+    Σ c̃x + slack = B̃ is satisfiable iff Σ c̃x ≤ B̃ (within the representable range).
+
+    NOTE: ``slack_range_units`` is the span the slack must cover, which is
+    ``cap_units − min_spend_units`` (see :func:`day_slack_range`), NOT the full
+    cap. Because every job runs on at least the cheap tier, daily spend can never
+    fall below the all-cheap spend, so the slack never needs to reach the cap.
+    Sizing slack to this tighter range is both correct and far cheaper in bits —
+    it shrinks the per-day cap clique that simulated annealing must navigate.
     """
-    if cap_units <= 0:
+    if slack_range_units <= 0:
         return 0
-    return int(math.ceil(math.log2(cap_units + 1)))
+    return int(math.ceil(math.log2(slack_range_units + 1)))
+
+
+def day_min_spend_units(instance: Instance) -> np.ndarray:
+    """Per-day minimum achievable spend in credit units (cheapest tier per job)."""
+    c_units = rounded_costs(instance)
+    mins = np.zeros(instance.D, dtype=int)
+    for d in range(instance.D):
+        mins[d] = int(sum(c_units[i].min() for i in instance.jobs_on_day(d)))
+    return mins
+
+
+def day_slack_range(instance: Instance) -> np.ndarray:
+    """Per-day slack span to encode: max(0, cap_units − min_spend_units)."""
+    b_units = rounded_caps(instance)
+    min_units = day_min_spend_units(instance)
+    return np.maximum(0, b_units - min_units)
+
+
+def default_slack_bits(instance: Instance) -> Dict[int, int]:
+    """Correct slack-bit count per day, sized to the slack *range* (not the cap)."""
+    rng = day_slack_range(instance)
+    return {d: slack_bits_for(int(rng[d])) for d in range(instance.D)}
 
 
 def rounded_costs(instance: Instance) -> np.ndarray:
@@ -99,11 +128,38 @@ def rounded_caps(instance: Instance) -> np.ndarray:
     return np.rint(instance.caps / instance.credit_unit).astype(int)
 
 
+def rounded_deltas(instance: Instance) -> np.ndarray:
+    """Per-tier *extra* cost over the cheap tier, in credit units.
+
+    ``delta[i, a] = c̃[i, a] − c̃[i, 0] >= 0`` with ``delta[:, 0] = 0``. Used by the
+    baseline-shifted cap encoding: cheap-tier choices contribute 0 and therefore
+    drop out of the cap clique entirely (only escalation choices remain coupled),
+    which is far better conditioned for simulated annealing.
+    """
+    c = rounded_costs(instance)
+    return c - c[:, [0]]
+
+
+def day_cheap_units(instance: Instance) -> np.ndarray:
+    """Per-day all-cheap spend in credit units (the unavoidable baseline)."""
+    c = rounded_costs(instance)
+    out = np.zeros(instance.D, dtype=int)
+    for d in range(instance.D):
+        out[d] = int(sum(c[i, 0] for i in instance.jobs_on_day(d)))
+    return out
+
+
+def day_headroom_units(instance: Instance) -> np.ndarray:
+    """Per-day escalation headroom in credit units: cap − all-cheap spend."""
+    return rounded_caps(instance) - day_cheap_units(instance)
+
+
 def build_bqm(
     instance: Instance,
     penalties: Penalties,
     slack_bits: Optional[Dict[int, int]] = None,
     include_cap: bool = True,
+    cap_mode: str = "shifted",
 ) -> dimod.BinaryQuadraticModel:
     """Construct the routing BQM.
 
@@ -112,16 +168,24 @@ def build_bqm(
     instance : the problem.
     penalties : P_A (one-hot, hard), P_B (cap, hard), P_C (coupling, soft).
     slack_bits : optional ``{day: K_d}`` override. Defaults to the correct
-        ``slack_bits_for`` per day. Deliberately under-provisioning K_d is the
+        range-sized count per day. Deliberately under-provisioning K_d is the
         failure mode probed in experiment 02.
     include_cap : if False, omit the daily-cap penalty entirely (used to isolate
         terms in tests/experiments).
+    cap_mode : ``"shifted"`` (default) encodes the cap as
+        ``Σ Δ̃·x + slack = headroom`` (escalation extra over the all-cheap
+        baseline); cheap-tier vars drop out of the cap clique. ``"absolute"``
+        encodes the literal ``Σ c̃·x + slack = B̃``. The two are identical at
+        one-hot-feasible points but ``"shifted"`` is much easier for SA — see
+        experiment 01. Use ``"absolute"`` only to reproduce the v1 failure mode.
 
     Returns
     -------
     dimod.BinaryQuadraticModel (BINARY vartype). The objective is in raw token
     units; the cap penalty operates in rounded credit units.
     """
+    if cap_mode not in ("shifted", "absolute"):
+        raise ValueError(f"cap_mode must be 'shifted' or 'absolute', got {cap_mode!r}")
     bqm = dimod.BinaryQuadraticModel(vartype=dimod.BINARY)
     N, A = instance.N, instance.A
 
@@ -143,22 +207,33 @@ def build_bqm(
     # --- H_cap: per-day squared-slack cap (rounded credit units) ------------
     if include_cap:
         c_units = rounded_costs(instance)
+        d_units = rounded_deltas(instance)
         b_units = rounded_caps(instance)
+        head_units = day_headroom_units(instance)
+        default_bits = default_slack_bits(instance)
         for d in range(instance.D):
             jobs = instance.jobs_on_day(d)
             if not jobs:
                 continue
-            cap_u = int(b_units[d])
-            Kd = slack_bits_for(cap_u) if slack_bits is None else slack_bits.get(d, slack_bits_for(cap_u))
+            Kd = default_bits[d] if slack_bits is None else slack_bits.get(d, default_bits[d])
             terms: Dict[Tuple, float] = {}
-            for i in jobs:
-                for a in range(A):
-                    terms[xvar(i, a)] = float(c_units[i, a])
+            if cap_mode == "shifted":
+                # Σ Δ̃·x + slack = headroom ; cheap-tier (Δ=0) vars drop out.
+                for i in jobs:
+                    for a in range(A):
+                        if d_units[i, a] != 0:
+                            terms[xvar(i, a)] = float(d_units[i, a])
+                target = float(head_units[d])
+            else:  # "absolute": literal Σ c̃·x + slack = B̃
+                for i in jobs:
+                    for a in range(A):
+                        terms[xvar(i, a)] = float(c_units[i, a])
+                target = float(b_units[d])
             for k in range(Kd):
                 bqm.add_variable(svar(d, k), 0.0)
                 terms[svar(d, k)] = float(2 ** k)
-            # penalty = P_B * (Σ c̃x + Σ 2^k s − B̃)^2
-            add_squared_penalty(bqm, terms, constant=float(-cap_u), strength=penalties.P_B)
+            # penalty = P_B * (Σ terms − target)^2
+            add_squared_penalty(bqm, terms, constant=-target, strength=penalties.P_B)
 
     # --- H_couple: Σ_{i→j} w_{ij} e_j (1 − e_i) -----------------------------
     # e_i = Σ_{a≥1} x_{i,a};  e_j(1−e_i) = e_j − e_j·e_i
@@ -196,11 +271,10 @@ def decode_assignment(instance: Instance, sample: Dict) -> List[int]:
 
 def slack_values(instance: Instance, sample: Dict, slack_bits: Optional[Dict[int, int]] = None) -> Dict[int, int]:
     """Decode the slack integer Σ_k 2^k s_{d,k} for each day present in *sample*."""
-    b_units = rounded_caps(instance)
+    default_bits = default_slack_bits(instance)
     out: Dict[int, int] = {}
     for d in range(instance.D):
-        cap_u = int(b_units[d])
-        Kd = slack_bits_for(cap_u) if slack_bits is None else slack_bits.get(d, slack_bits_for(cap_u))
+        Kd = default_bits[d] if slack_bits is None else slack_bits.get(d, default_bits[d])
         total = 0
         for k in range(Kd):
             total += (2 ** k) * int(sample.get(svar(d, k), 0))
@@ -211,8 +285,20 @@ def slack_values(instance: Instance, sample: Dict, slack_bits: Optional[Dict[int
 def objective_scale(instance: Instance) -> float:
     """A representative magnitude of the linear objective, for penalty calibration.
 
-    Returns the sum of absolute per-assignment objective coefficients — an upper
-    bound on how much objective an infeasible solution could "buy" by cheating a
-    constraint. Penalty weights are reported as multiples of this in experiment 01.
+    Returns the sum of absolute per-assignment objective coefficients — a loose
+    upper bound on the total objective swing.
     """
     return float(np.abs(instance.cost - instance.value).sum())
+
+
+def objective_coeff_max(instance: Instance) -> float:
+    """Largest single objective coefficient magnitude, max_{i,a} |c_{i,a} − v_{i,a}|.
+
+    This is the Lagrangian-style bound that matters for penalty calibration: a hard
+    penalty must exceed the objective gain a *single* constraint-cheating flip can
+    buy, which is bounded by this — NOT by the sum over all jobs. Scaling penalties
+    to this (rather than the much larger sum) keeps the QUBO coefficients in a
+    narrow dynamic range, which simulated annealing handles far better. Penalty
+    weights are reported as multiples of this in experiment 01.
+    """
+    return float(np.abs(instance.cost - instance.value).max())

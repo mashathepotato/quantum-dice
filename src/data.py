@@ -109,7 +109,7 @@ def generate_instance(
     D: int = 3,
     seed: int = 0,
     escalation_multiplier: Tuple[float, float] = (3.0, 8.0),
-    cap_tightness: float = 0.55,
+    cap_tightness: float = 0.35,
     edge_density: float = 0.4,
     credit_unit: float = 2_000.0,
     name: Optional[str] = None,
@@ -122,8 +122,12 @@ def generate_instance(
     seed : RNG seed (reproducible).
     escalation_multiplier : (lo, hi) range; the most expensive tier costs this
         many times the cheap tier. Intermediate tiers are interpolated.
-    cap_tightness : daily cap as a fraction of that day's *mean-tier* potential
-        spend. < 1 makes the cap bind (forces trade-offs); ~1.0+ is slack.
+    cap_tightness : daily cap = all-cheap baseline spend + ``cap_tightness`` ·
+        (escalation headroom), where headroom = Σ (expensive − cheap) on that day.
+        So the all-cheap plan is ALWAYS feasible (the budget never starves the
+        baseline), and ``cap_tightness`` directly controls how much of the full
+        escalation the budget permits: 0 -> no escalation affordable, 1 -> all
+        escalation affordable. Values ~0.2-0.5 make the escalation decision bind.
     edge_density : probability of a forward DAG edge between eligible job pairs.
     credit_unit : tokens per coarse credit unit (passed through to Instance).
     name : label.
@@ -195,13 +199,15 @@ def generate_instance(
     # keep the DAG sparse/realistic: cap out-degree implicitly via density; dedupe
     # (already unique by construction).
 
-    # --- daily caps: tight enough to bind -----------------------------------
+    # --- daily caps: all-cheap baseline + a fraction of escalation headroom --
+    # cap[d] = Σ cheap + cap_tightness · Σ (most-expensive − cheap). The all-cheap
+    # plan always fits; cap_tightness controls how much escalation is affordable.
     caps = np.zeros(D)
-    mean_tier_cost = cost.mean(axis=1)  # per job, averaged over tiers
     for d in range(D):
         jobs = [i for i in range(N) if day[i] == d]
-        potential = sum(mean_tier_cost[i] for i in jobs)
-        caps[d] = max(1.0, cap_tightness * potential)
+        cheap = sum(cost[i, 0] for i in jobs)
+        headroom = sum(cost[i, A - 1] - cost[i, 0] for i in jobs)
+        caps[d] = max(1.0, cheap + cap_tightness * headroom)
 
     if name is None:
         name = f"synthetic_N{N}_A{A}_D{D}_seed{seed}"

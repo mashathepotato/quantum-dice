@@ -50,11 +50,20 @@ def tiny_instance():
 
 
 def test_slack_bits_count():
-    # cap units = 10 -> ceil(log2(11)) = 4 bits, max representable slack 15 >= 10
+    # arg is the slack RANGE: ceil(log2(range+1)) bits, max repr 2^K-1 >= range.
     assert slack_bits_for(10) == 4
     assert (2 ** slack_bits_for(10)) - 1 >= 10
     assert slack_bits_for(0) == 0
     assert slack_bits_for(1) == 1  # ceil(log2(2)) = 1
+
+
+def test_slack_sized_to_range_not_cap():
+    # tiny: cap units = 10, min achievable spend units = 1 (job0 cheap) + 2
+    # (job1 cheap) = 3, so slack range = 7 -> 3 bits (NOT 4 for the full cap).
+    from src.formulation import day_slack_range, default_slack_bits
+    inst = tiny_instance()
+    assert list(day_slack_range(inst)) == [7]
+    assert default_slack_bits(inst) == {0: 3}
 
 
 def test_add_squared_penalty_matches_algebra():
@@ -86,7 +95,7 @@ def test_hand_computed_energy():
     sample = {
         xvar(0, 0): 1, xvar(0, 1): 0,
         xvar(1, 0): 0, xvar(1, 1): 1,
-        svar(0, 0): 0, svar(0, 1): 0, svar(0, 2): 1, svar(0, 3): 0,
+        svar(0, 0): 0, svar(0, 1): 0, svar(0, 2): 1,
     }
     assert bqm.energy(sample) == pytest.approx(25.0)
 
@@ -97,17 +106,18 @@ def test_onehot_violation_costs_P_A():
     inst = tiny_instance()
     P_A = 1000.0
     bqm = build_bqm(inst, Penalties(P_A=P_A, P_B=10, P_C=1))
-    # job0 on both tiers, job1 cheap; pick slack to satisfy cap loosely.
-    # spend units = c̃00 + c̃01 + c̃10 = 1 + 3 + 2 = 6 -> slack 4 again.
+    # job0 on both tiers, job1 cheap. Shifted cap (default): Σ Δ̃·x = Δ01 = 2
+    # (x01=1; cheap x00/x10 have Δ=0; x11=0). headroom day0 = 7, so pick slack 5
+    # (bits 0 and 2: 1 + 4) to make the cap term exactly zero.
     base_sample = {
         xvar(0, 0): 1, xvar(0, 1): 1,
         xvar(1, 0): 1, xvar(1, 1): 0,
-        svar(0, 0): 0, svar(0, 1): 0, svar(0, 2): 1, svar(0, 3): 0,
+        svar(0, 0): 1, svar(0, 1): 0, svar(0, 2): 1,
     }
     e = bqm.energy(base_sample)
     # one-hot penalty for job0: (1 - 2)^2 = 1 -> contributes P_A; job1 fine (0).
-    # H_obj = 10 + 15 (job0 both) + 20 (job1 cheap) = 45 ; H_cap = 0 ; H_couple:
-    #   e_j=e_1=0 (job1 cheap) -> 0.
+    # H_obj = 10 + 15 (job0 both) + 20 (job1 cheap) = 45 ; H_cap = (2+5-7)^2 = 0 ;
+    # H_couple: e_j=e_1=0 (job1 cheap) -> 0.
     expected = 45.0 + P_A * 1.0
     assert e == pytest.approx(expected)
 
@@ -120,11 +130,28 @@ def test_coupling_zero_when_upstream_also_escalated():
     sample = {
         xvar(0, 0): 0, xvar(0, 1): 1,
         xvar(1, 0): 0, xvar(1, 1): 1,
-        svar(0, 0): 0, svar(0, 1): 1, svar(0, 2): 0, svar(0, 3): 0,
+        svar(0, 0): 0, svar(0, 1): 1, svar(0, 2): 0,
     }
     # H_obj = 15 (x01) + 10 (x11) = 25 ; one-hot 0 ; cap (8+2-10)^2=0 ;
     # couple: e_j=1, e_i=1 -> 1*(1-1)=0.
     assert bqm.energy(sample) == pytest.approx(25.0)
+
+
+def test_shifted_and_absolute_agree_on_feasible_onehot():
+    """The two cap encodings are identical at one-hot-feasible points (they differ
+    only by a constant baseline that one-hot makes exact). Check several samples."""
+    inst = tiny_instance()
+    pen = Penalties(P_A=10, P_B=7, P_C=1)
+    bqm_s = build_bqm(inst, pen, cap_mode="shifted")
+    bqm_a = build_bqm(inst, pen, cap_mode="absolute")
+    # job0 cheap, job1 esc: shifted slack 4 (=B-? ) vs absolute slack chosen to
+    # match its own equality. We compare the OBJECTIVE+coupling+onehot parts by
+    # giving each its cap-satisfying slack; both cap terms are then 0, so energies
+    # must match. shifted: Σ Δx=3, headroom 7 -> slack 4. absolute: Σ c x=6, B 10
+    # -> slack 4. Same slack here.
+    s = {xvar(0, 0): 1, xvar(0, 1): 0, xvar(1, 0): 0, xvar(1, 1): 1,
+         svar(0, 0): 0, svar(0, 1): 0, svar(0, 2): 1}
+    assert bqm_s.energy(s) == pytest.approx(bqm_a.energy(s))
 
 
 def test_decode_assignment_and_slack():
@@ -132,7 +159,7 @@ def test_decode_assignment_and_slack():
     sample = {
         xvar(0, 0): 1, xvar(0, 1): 0,
         xvar(1, 0): 0, xvar(1, 1): 1,
-        svar(0, 0): 0, svar(0, 1): 0, svar(0, 2): 1, svar(0, 3): 0,
+        svar(0, 0): 0, svar(0, 1): 0, svar(0, 2): 1,
     }
     assert decode_assignment(inst, sample) == [0, 1]
     assert slack_values(inst, sample) == {0: 4}
