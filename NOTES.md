@@ -179,3 +179,19 @@ actually work under simulated annealing. They are the core "iteration" evidence.
    cleaner, more interpretable knob and a more realistic budget.
 
 All four are documented in code docstrings at the point of definition.
+
+---
+
+## 6. Next steps (see STAGE2_REPORT §6)
+
+Lead Stage 3 direction: **context-freshness as a routing dimension**. Agents
+reason best in roughly the first ~50k tokens of a context and degrade as it fills,
+so the most intellectually intensive jobs should be deployed into a *fresh* context
+rather than appended to a long-running one. This is complementary to the dropped
+shared-context affinity term: prompt caching makes a long shared context *cheap*
+(cost), but it degrades output *quality* (value) — so for high-value jobs it can
+pay to start fresh. Encode as a state-dependent escalation value `v_i` discounted
+by tokens already accumulated in the job's context slot (start with a static
+per-job freshness discount — no new variables — then full slot-assignment with
+measured qubit cost). Other extensions: real run-DB data, soft per-provider rate
+limits, and the ORBIT hardware swap.

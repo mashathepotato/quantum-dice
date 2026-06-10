@@ -97,7 +97,7 @@ tiny instance (`tests/test_formulation.py::test_hand_computed_energy`).
 * **Validation** (`src/validate.py`): decodes a bitstring and checks the *hard*
   constraints directly in raw tokens — independent of the penalty machinery, so
   feasibility claims are genuine, not a restatement of the energy.
-* **Tests**: 23 unit tests (hand-computed energy, constraint detection,
+* **Tests**: 26 unit tests (hand-computed energy, constraint detection,
   known-optimum agreement across brute force / ILP / ExactSolver, loader) — all
   green before any result below was produced.
 
@@ -227,7 +227,51 @@ not reach.
   where sampling helps (diversity, re-sampling) and where it struggles (scale,
   tiers).
 
-## 6. Mapping to the Stage 2 assessment criteria
+## 6. Next steps
+
+**Context-freshness as a routing dimension (Stage 3).** The current model treats a
+job's escalation value `v_i` as fixed. In practice an agent's effective capability
+*decays with context length*: it reasons best in roughly the first ~50k tokens of a
+context and gets measurably worse as the context fills. The operational consequence
+is a decision the present formulation does not yet capture — *the most
+intellectually intensive jobs should be deployed into a **fresh** context (a new
+chat), not appended to a long-running one.*
+
+This is a natural and important extension because it is **complementary to the
+existing coupling term, not redundant with it**. The wasted-escalation coupling
+(and the decision to drop shared-context affinity) is a *cost* argument: prompt
+caching makes keeping a long shared context cheap. Context-freshness is a
+*quality* argument pulling the other way: a long context is cheap to keep but
+degrades output quality, so for high-value jobs it can be worth paying to start
+fresh. Modelling both lets the router trade cached-context savings against
+freshness-driven quality.
+
+A concrete encoding sketch:
+
+* Introduce context/session slots and a decision `y[i,s]` = job `i` runs in context
+  slot `s` (one-hot over slots), with an ordering/accumulation of tokens within each
+  slot. A slot accumulates tokens as jobs are appended to it.
+* Make the escalation value **state-dependent**: `v_i` is discounted by a decay
+  `g(τ_{i})`, where `τ_i` is the tokens already accumulated in `i`'s slot *before*
+  it runs — e.g. full value below ~50k, falling off beyond. High-difficulty jobs
+  placed deep in a stale slot lose most of their escalation value, which the
+  optimiser then avoids.
+* Equivalently, add a soft penalty `Σ_i difficulty_i · staleness(slot of i)` that
+  pushes the hardest jobs toward low-staleness (fresh) slots, balanced against the
+  cost of spinning up / re-priming a new context.
+
+The main risk is tractability: slots + ordering reintroduce the `x_{i,a,t}`-style
+variable blow-up the Stage 1 proposal flagged and deferred. The plan is to add it
+incrementally — first a static per-job freshness discount (no extra variables,
+just a modified `v_i`), then full slot-assignment with measured qubit cost — and to
+keep the same ORBIT-ready sampler interface throughout.
+
+Other planned extensions: ingest a real run-DB export (the loader is ready); add
+per-provider rate limits as soft constraints of the same squared-slack form; and,
+once ORBIT is available (from 12 June 2026), swap `SASampler` → `OrbitAdapter` and
+re-run the scaling/diversity experiments on hardware.
+
+## 7. Mapping to the Stage 2 assessment criteria
 
 **1 — Formulation quality.** §2 gives a correct discrete encoding with every term
 justified against the real problem structure (objective with escalation value,
@@ -237,7 +281,7 @@ Faithfulness is *proved*, not asserted: hand-computed energy
 (`tests/test_formulation.py`) and ExactSolver==ILP==brute-force agreement (§4.5).
 Reconciliation with the Stage 1 proposal is explicit in [NOTES.md](NOTES.md).
 
-**2 — Implementation & iteration.** A working prototype (`src/`, 23 passing tests)
+**2 — Implementation & iteration.** A working prototype (`src/`, 26 passing tests)
 with documented iteration: the cap encoding (v1 absolute → v2 shifted, ~5% → ~80%
 feasible, §4.1), range-sized slack, `S_max` penalty scaling, and interpretable cap
 generation — each a failure found and fixed, logged in NOTES §5 and shown in

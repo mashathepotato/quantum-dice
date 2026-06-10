@@ -30,7 +30,7 @@ PuLP 3.3.1 (CBC), numpy 2.0.2, matplotlib 3.9.4, networkx 3.2.1, pytest 8.4.2.
 ## Run
 
 ```bash
-pytest                       # 23 tests: BQM energy by hand, validation, baselines, loader
+pytest                       # 26 tests: BQM energy by hand, validation, baselines, loader, sampler
 python run_all.py            # tests + all 5 experiments -> results/  (~25 s)
 python run_all.py --no-tests # experiments only
 ```
